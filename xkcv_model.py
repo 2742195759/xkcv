@@ -166,7 +166,7 @@ class User_Caption(nn.Module):
         loss.backward()
         optimizer.step()
         
-        return loss
+        return loss.item()
 
 
     def eval_test(self, test_dataset): #TODO
