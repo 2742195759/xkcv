@@ -1,105 +1,88 @@
 ## python3 代码
 import numpy as np
 import torch
+import os
 import pandas as pd
 import xkcv_optimizer
 from torch import *
 import torch.nn.init as init
 from nlp_score import score # 评分函数
 
+####################################
+# 
+#      XXX xkcv_model protocol
+#1. compared with nn.Module, the xkcv_model have the abillity to 
+#   handle the loss. because a successful model contains 2 parts
+#   the model parts(forward parts) and the loss parts
+#
+#      XXX Loss process protocol (always xkcv)
+#1. Loss contains 2 kinds of : supervised and unsupervised
+#2. for the supervised learning and inter_module unsupervised loss, the loss is calculated
+#   by the father xkcv module, and in the function of the _step_loss() function
+#3. XXX don't let the nn.module have loss, if you need them, make it can be assessed by the 
+#   driver module xvcvmodule, such as self.for_loss_XXX = mid_variates
+#
+#      XXX Eval protocal
+#1. if have two different state, use the forward() means  See. Cond_LSTM
+#
+####################################
 
-def get_instance(name, args):
-    return eval(name)(args)
 
-class Cond_LSTM(torch.nn.Module):
-    """
-        [U diag(Fs) V] . shape = (n_hidden, n_hidden) => n_F 为 
-        
-    """
-    def __init__ (self, n_input, n_hidden, n_F, n_cond_dim):
-        super(Cond_LSTM, self).__init__()
-        self.wei_U = []
-        self.wei_V = []
-        self.wei_W = []
-        self.n_hidden = n_hidden
-        self.n_input = n_input
-        self.n_cond_dim = n_cond_dim
-        self.n_F = n_F
-        for i in range(4): # responding to "i f g o" gates respectively
-            self.wei_U[i]  = torch.Parameter(torch.Tensor(n_hidden, n_F))
-            self.wei_V[i]  = torch.Parameter(torch.Tensor(n_F, n_hidden))
-            self.wei_F     = torch.Parameter(torch.Tensor(n_F, n_cond_dim))
-            self.wei_WI[i] = torch.Parameter(torch.Tensor(n_hidden, n_input))      # for input weight
-        
-        self.init_parameters()
 
-    def init_parameters(self): # FIXME(是否有更加好的实现方式)
-        for i in range(4):
-            self.wei_U[i]  = init.normal_(self.wei_U[i], mean=0.0, std=1.0)
-            self.wei_V[i]  = init.normal_(self.wei_V[i], mean=0.0, std=1.0)
-            self.wei_F     = init.normal_(self.wei_F[i], mean=0.0, std=1.0)
-            self.wei_WI[i] = init.normal_(self.wei_WI[i], mean=0.0, std=1.0)
-    
-    def forward(self, tnsr_input, tpl_h0_c0, tnsr_cond): # XXX 每个batch必须要cond相同
-        """
-        @ tnsr_input : (n_step, n_batch, n_feat_dim)
-        @ tpl_h0_c0  : ((n_batch, n_hidden) , (n_batch, n_hidden)) 一个tuple
-        @ tnsr_cond  : (n_cond_dim, ), the same for the whole batch
-        """
-        assert(tnsr_cond.shape[0] == self.n_cond_dim)
-        wei_WH = [ self.wei_U.matmul((self.F.matmul(tnsr_cond))*self.wei_V[i])  for i in range(4) ]
+dict_path = './xkmodel_param/'
 
-        n_batch = tnsr_input.shape[2]
-        n_step  = tnsr_input.shape[0]
-        c = [ tpl_h0_c0[1]]  # self.c[i].shape = (n_hidden, n_batch)
-        assert (c[0].shape == (self.n_hidden, n_batch))
-        h = [ tpl_h0_c0[0]]  # self.c[i].shape = (n_hidden, n_batch)
-        assert (h[0].shape == (self.n_hidden, n_batch))
-        
-        for t in range(n_step): # TODO add Bias, bi and bh
-            it = torch.sigmoid(self.wei_WI[0].matmul(tnsr_input[t]) + wei_WH[0].matmul(h[t]))  # it.shape = (n_hidden, n_batch)
-            ft = torch.sigmoid(self.wei_WI[1].matmul(tnsr_input[t]) + wei_WH[1].matmul(h[t]))  
-            gt = torch.tanh(self.wei_WI[2].matmul(tnsr_input[t]) + wei_WH[2].matmul(h[t]))
-            ot = torch.sigmoid(self.wei_WI[3].matmul(tnsr_input[t]) + wei_WH[3].matmul(h[t]))
-            
-            c[t+1] = ft * c[t] + it * gt
-            h[t+1] = ot * torch.tanh(c[t+1])
-            
-        assert (len(h) == len(c) && len(c) == step+1)
-        assert (h[0].shape == (n_hidden, n_batch)) # 列向量
-        return h, c
+def get_instance(name, args, path=None):
+    model = eval(name)(args)
+    if (path != None):
+        path = dict_path + path
+        model.load_state_dict(torch.load(path))
+    return model
 
-    # XXX 不要有多个batch，不要梯度
-    def eval_start(self, tpl_h0_c0, tnsr_cond):
-        """ eval_start 然后每个 eval_step 输出一个output
-        @tpl_h0_c0 : (h0, c0)   type(h0|c0) =  torch.tensor ;  h0|c0.shape = (n_hidden,)
-        @tnsr_cond : tensor shape=(n_cond)
-        """
-        assert(tnsr_cond.shape[0] == self.n_cond_dim)
-        wei_WH = [ self.wei_U.matmul((self.F.matmul(tnsr_cond))*self.wei_V[i])  for i in range(4) ]
-        self._eval_c = [ tpl_h0_c0[1]]  # self.c[i].shape = (n_hidden, n_batch)
-        assert (self._eval_c[0].shape == (self.n_hidden, ))
-        self._eval_h = [ tpl_h0_c0[0]]  # self.c[i].shape = (n_hidden, n_batch)
-        assert (self._eval_h[0].shape == (self.n_hidden, ))
+def save_xkmodel(model, path):
+    if not os.path.exists(dict_path) : 
+        os.mkdir(dict_path)
+    torch.save(model.state_dict(), dict_path+path)
+
+# XXX (Driver Module, contains a lot nn.module and this is a driven model)
+#     1. handle loss and train 
+#     2. can use to eval and 
+
+class xkcv_model(nn.Module) :
+    def __init__(self):
+        super(xkcv_model, self).__init__()
         pass
 
-    def eval_step (self, tnsr_input)
-        """ eval_start 然后每个 eval_step 输出一个output
+    def _step_loss(self, input_batch):
+        raise NotImplementedError()
+        pass
 
-        @ tnsr_input : tensor shape=(input_feat_dims)
+    def train_step(self, input_batch):
         """
-        tnsr_input = tnsr_input.unsqueeze(1)  # make it bacame matrix
-        it = torch.sigmoid(self.wei_WI[0].matmul(tnsr_input) + wei_WH[0].matmul(self._eval_h[t]))  # it.shape = (n_hidden, 1)
-        ft = torch.sigmoid(self.wei_WI[1].matmul(tnsr_input) + wei_WH[1].matmul(self._eval_h[t]))  
-        gt = torch.tanh(self.wei_WI[2].matmul(tnsr_input) + wei_WH[2].matmul(self._eval_h[t]))
-        ot = torch.sigmoid(self.wei_WI[3].matmul(tnsr_input) + wei_WH[3].matmul(self._eval_h[t]))
-            
-        self._eval_c = ft * self._eval_c + it * gt
-        self._eval_h = ot * torch.tanh(self._eval_c)
+            train_step，see it in [](https://pytorch-cn.readthedocs.io/zh/latest/package_references/torch-optim/)
+        """
+        #XXX must add the self.train()
+        self.train()
 
-        return self._eval_h.squeeze(), self._eval_c.squeeze()
-            
-# XXX (Driver Module)
+        self.optimizer.zero_grad()
+        loss = self._step_loss(input_batch)
+        loss.backward()
+        optimizer.step()
+        
+        return loss.item()
+
+    def eval_test(self, test_dataset): 
+        """
+            the forward process and the result
+            @test_dataset : should be a list of input, input formated see the concrete function
+            @return       : should be a tuple of ([result_format], avg_score/avg_metric_str)
+        """
+        #XXX must add self.eval()
+        raise NotImplementedError()
+        
+    def best_result(self):  
+        raise NotImplementedError()
+
+
 # XXX (需要注意，句子要加入 <SOS> 和 <EOS> 在句首和句尾
 class User_Caption(nn.Module):
     def __init__(self, args) :
@@ -138,7 +121,6 @@ class User_Caption(nn.Module):
             @ key [numpy] img_feat : .shape = (n_batch, n_img_dim)
             @ key [numpy] cap_seq  : .shape = (n_batch, n_max_len)
         """
-        self.train()
 
         user_embedding = self.wei_user[input_batch.uid]
         img_feat = input_batch.img_feat
@@ -155,19 +137,6 @@ class User_Caption(nn.Module):
             loss += tmp.sum()
 
         return loss
-
-    def train_step(self, input_batch):
-        """
-            train_step，see it in [](https://pytorch-cn.readthedocs.io/zh/latest/package_references/torch-optim/)
-        """
-
-        self.optimizer.zero_grad()
-        loss = self._step_loss(input_batch)
-        loss.backward()
-        optimizer.step()
-        
-        return loss.item()
-
 
     def eval_test(self, test_dataset): #TODO
         """
@@ -229,13 +198,17 @@ class User_Caption(nn.Module):
 
         self._best = 'not record' #TODO add it 
 
-        return ('Bleu - 1gram:' + str(BLEU_1/len(test_dataset)) +
-                'Bleu - 2gram:' + BLEU_2/len(test_dataset)) + 
-                'Bleu - 3gram:'+ BLEU_3/len(test_dataset)) + 
-                'Bleu - 4gram:'+ BLEU_4/len(test_dataset)) +
-                'Rouge:'+ ROUGE_L/len(test_dataset)
-               )
+        return (None , ('Bleu - 1gram:' + str(BLEU_1/len(test_dataset)) + # TODO add the result to this function
+                'Bleu - 2gram:' + str(BLEU_2/len(test_dataset)) + 
+                'Bleu - 3gram:'+ str(BLEU_3/len(test_dataset)) + 
+                'Bleu - 4gram:'+ str(BLEU_4/len(test_dataset)) +
+                'Rouge:'+ str(ROUGE_L/len(test_dataset))
+               ))
                 
     def best_result(self): 
         # return the best eval value to the caller
         return self._best
+
+
+
+class 
