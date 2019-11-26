@@ -10,32 +10,6 @@ from torch import *
 import torch.nn.init as init
 from nlp_score import score # 评分函数
 
-# XXX 写代码需要考虑 batch_size ，传入不同的batch_size也要可以工作才可以。
-
-class AestheticTagPredictor(torch.nn.Module):
-    """
-    
-    """
-    def __init__(self, )
-
-class AestheticFeatureLayer(torch.nn.Module):
-    """
-        Extract the high level aesthetic feature from tags prediction 
-    """
-    def __init__(self, cnn_feat_dim, batch_size, aesthetic_feature_dim):
-        self.bs = batch_size
-        self.dim= cnn_feat_dim
-        self.fdim=aesthetic_feature_dim
-        pass
-
-    def forward(self, cnn_feature):
-        """
-            @cnn_feature: np.array()  .shape = (self.bs, self.dim)
-            @return:      np.array()  .shape = (self.bs, self.fdim)
-        """ 
-        cnn_feature
-        
-
 class Cond_LSTM(torch.nn.Module):
     """
         [U diag(Fs) V] . shape = (n_hidden, n_hidden) => n_F 为 

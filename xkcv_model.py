@@ -135,7 +135,6 @@ class User_Caption(nn.Module):
             indexes = (range(n_batch), input_batch.cap_seq[:,i])  # 同一个step中，所有的batch的gt对应的prob选取出来。
             tmp = -torch.log(softmax(ht.transpose().matmul(self.wei_WP))[indexes].squeeze())   # TODO(check) 所有都是加起来吗? , tmp.shape = (n_batch,)
             loss += tmp.sum()
-
         return loss
 
     def eval_test(self, test_dataset): #TODO
