@@ -5,17 +5,40 @@
 
 ##############################
 #
-#       Assumption 假设
+#      XXX Assumption 假设
 # 1. 驱动函数中只有numpy 和 pandas 对象, 不包含具体的tensor数据
 # 2. 驱动函数通过获取实例来获得model和dataloader
 # 3. 驱动函数不使用学习率等，具体的训练过程在model函数中
 # 4. 本普通驱动函数不考虑多重训练啥的，只负责简单的训练方法
 #
 ##############################
-
 ##############################
 #
-#      args对象必须参数
+#      XXX 命名规范
+# 1. 类名驼峰，变量函数_分割，_*的函数作为私有函数，hook_*作为钩子函数()
+# 2. 变量命名：
+#    第一个字段作为类型符号，包含 [np_ df_ n_ str_ tnsr_ b_ m_ s_ f_]
+#    第二个字段开始为名词
+# 3. 类文档规范
+#    class ClassName:
+        """@ mutable | overridable      --------------------- 作为关键字栏目
+                                        --------------------- 空行
+           类描述放在这里               --------------------- 类描述文本
+        """
+#        def function_name(self):
+         """@ 关键字
+
+            函数功能描述
+
+            @ 参数: 类型   描述
+            @ 参数: 类型   描述
+            @ ret : 返回值类型  描述
+         """
+#
+##############################
+##############################
+#
+#      XXX args对象必须参数
 #     
 #1. 优化器相关
 #   optimizer_name 
@@ -30,11 +53,15 @@
 #   eval_interval
 #   loss_interval
 #
+#3. 经典超参数类  hyper_*
+#   例如 : hyper_alpha, hyper_lambda等
+#
 ##############################
 
 import os
 import sys
 import xkcv_model
+import xkcv_dataloader
 from xklib import space 
 if './utils/nlp-metrics' not in sys.path:
     sys.path.append('./utils/nlp-metrics')

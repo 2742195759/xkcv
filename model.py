@@ -10,6 +10,73 @@ from torch import *
 import torch.nn.init as init
 from nlp_score import score # 评分函数
 
+<<<<<<< HEAD
+=======
+class DeepMultiTagPredictor(torch.nn.Module):
+    """ @ mutable | tunable
+        
+        the module to use the high_feature to predict the tag.
+        and get the loss for error-proporganda
+        the module simply model the task as multi binary logistic regression classifiers
+    """
+    def __init__(self, aesthetic_feature_dim, label_num=14):
+        self.aesthetic_feature_dim = aesthetic_feature_dim
+        self.label_num = 14
+        self.weight_w = torch.nn.Parameter(torch.Tensor(self.label_num, self.aesthetic_feature_dim))
+        self.weight_w = torch.nn.init.normal_(self.wei_user, mean=0.0, std=1.0)
+
+    def forward(self, high_feature)
+    """
+        use the high_feature to predict the label class
+        
+        @ high_feature: the high level feature wants to predict the tag
+        @ return      : numpy([batch_size, labels_num]) #prob [0, 1]
+    """
+        output = torch.matmul(high_feature, self.weight_w.transpose())
+        return torch.nn.Sigmoid(output) # simple
+
+class AestheticFeatureLayer(torch.nn.Module):
+    """ @ mutable | tunable
+
+        Extract the high level aesthetic feature from tags prediction 
+    """
+    def __init__(self, cnn_feat_dim, aesthetic_feature_dim, batch_size):
+        self.bs = batch_size
+        self.dim= cnn_feat_dim
+        self.fdim=aesthetic_feature_dim
+        # ====================== inner parameters ====================
+        self.layers = [cnn_feat_dim, 500, aesthetic_feature_dim]
+        self.activiate = torch.nn.Tanh()
+        # ====================== inner initialize ====================
+        self.mlp = []
+        for prev, nex in zip(self.layers, self.layers[1:]):
+            self.mlp.append(torch.nn.Linear(prev, nex))
+            self.mlp.append(self.activiate)
+
+    def forward(self, cnn_feature):
+        """
+            @cnn_feature: np.array()  .shape = (self.bs, self.dim)
+            @return:      np.array()  .shape = (self.bs, self.fdim)
+        """ 
+        high_feature = self.transform_function(cnn_feature)
+        return high_feature
+    
+    def transform_function(self, raw_feature): 
+        """ @ overridable
+
+            this function is the transform process of the raw_feature
+
+            @raw_feature: np.array()  .shape = (self.bs, self.dim)
+            @return     : np.array()  .shape = (self.bs, self.fdim)
+        """
+        # TODO (try different function, the basic is to use the 2-layer MLP )
+        tensor_flow = raw_feature
+        for layer in self.mlp:
+            output = layer(tensor_flow)
+        return tensor_flow
+        
+
+>>>>>>> 69e9bf457249c1babef29f606435a6b17ba8df64
 class Cond_LSTM(torch.nn.Module):
     """
         [U diag(Fs) V] . shape = (n_hidden, n_hidden) => n_F 为 

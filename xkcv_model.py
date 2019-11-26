@@ -6,6 +6,7 @@ import pandas as pd
 import xkcv_optimizer
 from torch import *
 import torch.nn.init as init
+from model import *
 from nlp_score import score # 评分函数
 
 ####################################
@@ -19,17 +20,26 @@ from nlp_score import score # 评分函数
 #1. Loss contains 2 kinds of : supervised and unsupervised
 #2. for the supervised learning and inter_module unsupervised loss, the loss is calculated
 #   by the father xkcv module, and in the function of the _step_loss() function
-#3. XXX don't let the nn.module have loss, if you need them, make it can be assessed by the 
-#   driver module xvcvmodule, such as self.for_loss_XXX = mid_variates
+#3.    XXX(don't let the nn.module have loss) if you need loss, make it can be assessed by the 
+#   driver module xvcvmodule, such as self.for_loss_XXX = mid_variates, the self.mid_variates
+#   should only contains the information, not the loss itself
 #
 #      XXX Eval protocal
 #1. if have two different state, use the forward() means  See. Cond_LSTM
+# 
+#      XXX args protocal
+#1. The module should only get the values in __init__()
+#2. The xkmodule can get args in the args = space() variates
+# 
+#      XXX input general protocal
+#1. every batch appears in the first dim even the batch is 1, the dim will preserved
+#      [[item_1]]
 #
 ####################################
 
 
 
-dict_path = './xkmodel_param/'
+dict_path = './cache/xkmodel_save/'
 
 def get_instance(name, args, path=None):
     model = eval(name)(args)
@@ -85,8 +95,9 @@ class xkcv_model(nn.Module) :
 
 # XXX (需要注意，句子要加入 <SOS> 和 <EOS> 在句首和句尾
 class User_Caption(nn.Module):
-    def __init__(self, args) :
+    def __init__(self, args):
         super(User_Caption, self).__init__()
+        self.hyper_alpha = args.hyper_alpha
         self.batch_size = args.batch_size
         self.device = args.device
         self.n_user = args.n_user
@@ -94,16 +105,20 @@ class User_Caption(nn.Module):
         self.n_img_dim = args.n_img_dim   # [int] img feature dim
         self.n_word_dim = args.n_word_dim
         self.n_voc_size = args.n_voc_size
+        self.n_high_dim = args.n_high_dim
         self.wei_user = nn.Parameter(Tensor(n_user, n_user_dim))
         self.reset_parameter()
         self.word_emb = nn.Embedding(self.n_voc_size, n_word_dim)
         # construct the link to the lstm
         self.cond_lstm = Cond_LSTM(n_word_dim, args.n_hidden, args.n_F, args.n_user_dim)
         self.n_hidden = args.n_hidden
-        self.wei_WI = nn.Parameter(Tensor(self.n_img_dim, args.hidden))   # self.wei_WI 见图, image_feat transform matrix
+        self.wei_WI = nn.Parameter(Tensor(self.n_img_dim+self.n_high_dim, args.hidden))   # self.wei_WI 见图, image_feat transform matrix
         self.wei_WP = nn.Parameter(Tensor(args.hidden, args.n_voc_size))  # self.wei_WP 预测softmax的地方，
 
         self.optimizer = xkcv_optimizer.get_instance(self, args) # XXX 一定要在 所有parameter之后
+        # === submodule ===
+        self.model_feature_embed = AestheticFeatureLayer(self.n_high_dim, self.n_img_dim, self.batch_size)
+        self.model_predictor = DeepMultiTagPredictor(self.n_high_dim)
         # XXX 初始化变量要reset_parameter中添加
 
     def reset_parameter(self):
@@ -112,6 +127,18 @@ class User_Caption(nn.Module):
         self.wei_WP   = init.normal_(self.wei_WP, mean=0.0, std=1.0)
         # self.
 
+    def loss_function (self, raw_feature, high_feature):
+        """ @ mutable
+            
+            this function is the loss of the high_feature, unsupervised loss. used by the father model
+            to calculate loss if needed. if don't need please set the lossfunction to None
+
+            @raw_feature: np.array()  .shape = (self.bs, self.dim)
+            @return     : np.array()  .shape = (self.bs, self.fdim)
+        """
+        # TODO (try different loss function, the basic is to use tag-predict crossentropy like loss)
+
+
     def _step_loss(self, input_batch): # TODO 将这个拆分为 forward 和 loss_fn 两个
         """
         输入格式: 
@@ -119,15 +146,17 @@ class User_Caption(nn.Module):
             type(input_batch) = space @后为关键字
             @ key [int]   uid      : 0-base
             @ key [numpy] img_feat : .shape = (n_batch, n_img_dim)
+            @ key [numpy] tags_gt  : .shape = (n_batch, n_tag_num) .dtype=int64
             @ key [numpy] cap_seq  : .shape = (n_batch, n_max_len)
         """
-
         user_embedding = self.wei_user[input_batch.uid]
-        img_feat = input_batch.img_feat
+        raw_img_feat = torch.from_numpy(input_batch.img_feat)
+        high_img_feat = self.model_feature_embed(raw_img_feat)
+        img_feat      = torch.concat([raw_img_feat, high_img_feat], axis=1)
         n_batch = img_feat.shape[0]
         lstm_input = torch.transpose(self.word_emb(input_batch.cap_seq), 0, 1) # n_step, n_batch, dim
         c0 = torch.randn(self.n_hidden).repeat(n_batch,1).transpose()  # TODO (???变为Parameter吗需要?)
-        h0 = torch.from_numpy(img_feat).matmul(self.wei_WI)
+        h0 = img_feat.matmul(self.wei_WI)
         h, c = self.cond_lstm(lstm_input, (h0,c0)) 
         softmax = torch.nn.Softmax(dim=-1)
         loss = torch.tensor(0) # 初始化为0, 否则
@@ -135,7 +164,17 @@ class User_Caption(nn.Module):
             indexes = (range(n_batch), input_batch.cap_seq[:,i])  # 同一个step中，所有的batch的gt对应的prob选取出来。
             tmp = -torch.log(softmax(ht.transpose().matmul(self.wei_WP))[indexes].squeeze())   # TODO(check) 所有都是加起来吗? , tmp.shape = (n_batch,)
             loss += tmp.sum()
+<<<<<<< HEAD
         return loss
+=======
+
+        # calcul the predict loss
+        tags_pred = self.model_predictor(high_img_feat)
+        tags_gt   = ~(input_batch.tags_gt.type(np.bool)).type(np.int64)
+        loss_pred = -torch.log(torch.abs((tags_gt - tags_pred))).sum()
+
+        return loss + self.hyper_alpha * loss2
+>>>>>>> 69e9bf457249c1babef29f606435a6b17ba8df64
 
     def eval_test(self, test_dataset): #TODO
         """
@@ -157,7 +196,7 @@ class User_Caption(nn.Module):
         BLEU_3 = 0.
         BLEU_4 = 0.
         ROUGE_L = 0.
-        num_files = 0
+        num_files = 0.
         with torch.no_grad() : 
             for item in test_dataset:
                 output = [1] # store the predicted seq_cap, start with <SOS>
@@ -169,7 +208,9 @@ class User_Caption(nn.Module):
                 
                 max_cap_len = len(caq_seq)
                 n_batch = 1
-                img_feat = torch.from_numpy(input_batch.imagefeat)  # (n_feat_dim)
+                raw_img_feat = torch.from_numpy(input_batch.img_feat)
+                high_img_feat = self.model_feature_embed(raw_img_feat)
+                img_feat      = torch.concat([raw_img_feat, high_img_feat], axis=1)
                 user_embedding = self.wei_user[userid] # (n_cond_dim)
                 input_wid = 1               # 1 <SOS> 0 <EOS>
 
