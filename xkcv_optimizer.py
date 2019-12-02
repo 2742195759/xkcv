@@ -7,7 +7,8 @@ def interface_test(args, dataloader, model):
     assert(hasattr(args, 'optimizer_momentum'))
 
 def get_instance(model, args) : # Get the optimizer for the 
-    if args['optimizer_name'] == 'sgd':
-        return torch.optim.SGD(model.parameters(), lr=args['optimizer_lr'], momentum=args.optimizer_momentum)
-    else args['optimizer_name'] == 'adam'
-        return torch.optim.Adam(model.parameters(), lr=args['optimizer_lr'], momentum=args.optimizer_momentum)
+    if args.optimizer_name == 'sgd':
+        return torch.optim.SGD(model.parameters(), lr=args.optimizer_lr, momentum=args.optimizer_momentum, weight_decay=args.optimizer_weightdecay)
+    else :
+        args.optimizer_name == 'adam'
+        return torch.optim.Adam(model.parameters(), lr=args.optimizer_lr, momentum=args.optimizer_momentum, weight_decay=args.optimizer_weightdecay)

@@ -21,19 +21,19 @@
 #    第二个字段开始为名词
 # 3. 类文档规范
 #    class ClassName:
-        """@ mutable | overridable      --------------------- 作为关键字栏目
-                                        --------------------- 空行
-           类描述放在这里               --------------------- 类描述文本
-        """
+"""@ mutable | overridable       --------------------- 作为关键字栏目
+                                 --------------------- 空行
+    类描述放在这里               --------------------- 类描述文本
+"""
 #        def function_name(self):
-         """@ 关键字
+"""@ 关键字
 
-            函数功能描述
+    函数功能描述
 
-            @ 参数: 类型   描述
-            @ 参数: 类型   描述
-            @ ret : 返回值类型  描述
-         """
+    @ 参数: 类型   描述
+    @ 参数: 类型   描述
+    @ ret : 返回值类型  描述
+"""
 #
 ##############################
 ##############################
@@ -48,8 +48,7 @@
 #2. 训练相关
 #   device  
 #   epochs
-#   echo_interval 
-#   batch_size 
+#   batchsize 
 #   eval_interval
 #   loss_interval
 #
@@ -70,23 +69,24 @@ def interface_test(model, dataset, args) :
     assert(isinstance(args, space))
 
 def normal_train(model_name, args, save=None, load=None):
+    dataset = xkcv_dataloader.get_instance(model_name, args) # XXX dataset should return some 
     model = xkcv_model.get_instance(model_name, args, load)
-    dataset = xkcv_dataloader.get_instance(model_name, args)
 
     interface_test(model, dataset, args)
     for epoch in range(args.epochs):
         dataset.shuffle()                         # XXX 每个epoch调用一次，shuffle
         tot = len(dataset)
-        steps = tot / args.batch_size + tot + 1   # XXX dataset 要在 batch_id 过大时返回空
+        steps = dataset.get_batch_num()  # XXX dataset 要在 batch_id 过大时返回空
         for bid in range(steps):
             batch = dataset.get_batch(bid)        # XXX dataset.get_batch()  应该返回一个 dict{str: numpy} , 列为对应的名词
+            if not batch : continue
             loss  = model.train_step(batch)       # XXX type is float
             if ((bid+1) % args.eval_interval == 0): 
-                print ('[epoch:{epoch}, step:{bid}] eval = {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.eval_test()))
+                print ('[epoch:{epoch}, step:{bid}] eval = {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.eval_test(dataset.get_testset())))
             if ((bid+1) % args.loss_interval == 0): 
-                print ('[epoch:{epoch}, step:{bid}] loss = {loss_str}'.format(epoch=epoch, bid=bid, str(loss)))
+                print ('[epoch:{epoch}, step:{bid}] loss = {loss_str}'.format(epoch=epoch, bid=bid, loss_str=str(loss)))
 
-        print ('[epoch:{epoch}, step:{bid}] {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.eval_test()))
+        print ('[epoch:{epoch}, step:{bid}] {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.eval_test(dataset.get_testset())))
         print ('[BEST epoch:{epoch}] {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.best_result()))
 
     if save :

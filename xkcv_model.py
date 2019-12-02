@@ -8,6 +8,7 @@ from torch import *
 import torch.nn.init as init
 from model import *
 from nlp_score import score # 评分函数
+from xklib import space
 
 ####################################
 # 
@@ -57,7 +58,7 @@ def save_xkmodel(model, path):
 #     1. handle loss and train 
 #     2. can use to eval and 
 
-class xkcv_model(nn.Module) :
+class xkcv_model(torch.nn.Module) :
     def __init__(self):
         super(xkcv_model, self).__init__()
         pass
@@ -76,7 +77,7 @@ class xkcv_model(nn.Module) :
         self.optimizer.zero_grad()
         loss = self._step_loss(input_batch)
         loss.backward()
-        optimizer.step()
+        self.optimizer.step()
         
         return loss.item()
 
@@ -94,38 +95,40 @@ class xkcv_model(nn.Module) :
 
 
 # XXX (需要注意，句子要加入 <SOS> 和 <EOS> 在句首和句尾
-class User_Caption(nn.Module):
+class User_Caption(xkcv_model):
     def __init__(self, args):
         super(User_Caption, self).__init__()
-        self.hyper_alpha = args.hyper_alpha
-        self.batch_size = args.batch_size
-        self.device = args.device
+        self.dictionary = args.dictionary
+        self.batch_size = args.batchsize
+        self.device = torch.device(args.device)
         self.n_user = args.n_user
         self.n_user_dim = args.n_user_dim
         self.n_img_dim = args.n_img_dim   # [int] img feature dim
         self.n_word_dim = args.n_word_dim
         self.n_voc_size = args.n_voc_size
+        self.n_cap_len  = args.n_cap_len
         self.n_high_dim = args.n_high_dim
-        self.wei_user = nn.Parameter(Tensor(n_user, n_user_dim))
-        self.reset_parameter()
-        self.word_emb = nn.Embedding(self.n_voc_size, n_word_dim)
-        # construct the link to the lstm
-        self.cond_lstm = Cond_LSTM(n_word_dim, args.n_hidden, args.n_F, args.n_user_dim)
         self.n_hidden = args.n_hidden
-        self.wei_WI = nn.Parameter(Tensor(self.n_img_dim+self.n_high_dim, args.hidden))   # self.wei_WI 见图, image_feat transform matrix
-        self.wei_WP = nn.Parameter(Tensor(args.hidden, args.n_voc_size))  # self.wei_WP 预测softmax的地方，
-
-        self.optimizer = xkcv_optimizer.get_instance(self, args) # XXX 一定要在 所有parameter之后
+        self.wei_user = torch.nn.Parameter(Tensor(self.n_user, self.n_user_dim))
+        # construct the link to the lstm
+        self.wei_WI = torch.nn.Parameter(Tensor(self.n_img_dim+self.n_high_dim, self.n_hidden))   # self.wei_WI 见图, image_feat transform matrix
+        self.wei_WP = torch.nn.Parameter(Tensor(self.n_hidden, self.n_voc_size))  # self.wei_WP 预测softmax的地方，
+        self.wei_c0 = torch.nn.Parameter(torch.randn(self.n_hidden))
         # === submodule ===
-        self.model_feature_embed = AestheticFeatureLayer(self.n_high_dim, self.n_img_dim, self.batch_size)
-        self.model_predictor = DeepMultiTagPredictor(self.n_high_dim)
+        self.cond_lstm = Cond_LSTM(self.n_word_dim, args.n_hidden, args.n_F, self.n_user_dim)
+        self.word_emb = torch.nn.Embedding(self.n_voc_size, self.n_word_dim)
+        
         # XXX 初始化变量要reset_parameter中添加
+        self.reset_parameter()
+        self.optimizer = xkcv_optimizer.get_instance(self, args) # XXX 一定要在 所有parameter之后
+        import pdb
+        pdb.set_trace()
 
     def reset_parameter(self):
         self.wei_user = init.normal_(self.wei_user, mean=0.0, std=1.0)
         self.wei_WI   = init.normal_(self.wei_WI, mean=0.0, std=1.0)
         self.wei_WP   = init.normal_(self.wei_WP, mean=0.0, std=1.0)
-        # self.
+        self.wei_c0 = init.normal_(self.wei_c0, mean=0.0, std=1.0)
 
     def loss_function (self, raw_feature, high_feature):
         """ @ mutable
@@ -146,35 +149,31 @@ class User_Caption(nn.Module):
             type(input_batch) = space @后为关键字
             @ key [int]   uid      : 0-base
             @ key [numpy] img_feat : .shape = (n_batch, n_img_dim)
-            @ key [numpy] tags_gt  : .shape = (n_batch, n_tag_num) .dtype=int64
-            @ key [numpy] cap_seq  : .shape = (n_batch, n_max_len)
+            @ key [numpy] cap_seq  : .shape = (n_batch, n_cap_len)
         """
-        user_embedding = self.wei_user[input_batch.uid]
+        user_embedding = self.wei_user[input_batch.uid] # (n_user_dim,)
         raw_img_feat = torch.from_numpy(input_batch.img_feat)
-        high_img_feat = self.model_feature_embed(raw_img_feat)
-        img_feat      = torch.concat([raw_img_feat, high_img_feat], axis=1)
+        #high_img_feat = self.model_feature_embed(raw_img_feat)
+        #img_feat      = torch.concat([raw_img_feat, high_img_feat], axis=1)
+        img_feat = raw_img_feat
         n_batch = img_feat.shape[0]
-        lstm_input = torch.transpose(self.word_emb(input_batch.cap_seq), 0, 1) # n_step, n_batch, dim
-        c0 = torch.randn(self.n_hidden).repeat(n_batch,1).transpose()  # TODO (???变为Parameter吗需要?)
-        h0 = img_feat.matmul(self.wei_WI)
-        h, c = self.cond_lstm(lstm_input, (h0,c0)) 
+        #import pdb
+        #pdb.set_trace()
+        lstm_input = torch.transpose(self.word_emb(torch.from_numpy(input_batch.cap_seq)), 0, 1) # n_step, n_batch, dim
+        #c0 = self.wei_c0.repeat(n_batch,1).t()  # TODO (???变为Parameter吗需要?)
+        h0 = img_feat.matmul(self.wei_WI).t() # FIXME 梯度爆炸了
+        c0 = h0
+        h, c = self.cond_lstm(lstm_input, (h0,c0), user_embedding) 
         softmax = torch.nn.Softmax(dim=-1)
-        loss = torch.tensor(0) # 初始化为0, 否则
+        loss = torch.tensor(0, dtype=torch.float32) # 初始化为0, 否则
         for i, ht in enumerate(h[1:]): # TODO(check) <EOS>怎么考虑,然后Loss计算要考虑后面的吗。
             indexes = (range(n_batch), input_batch.cap_seq[:,i])  # 同一个step中，所有的batch的gt对应的prob选取出来。
-            tmp = -torch.log(softmax(ht.transpose().matmul(self.wei_WP))[indexes].squeeze())   # TODO(check) 所有都是加起来吗? , tmp.shape = (n_batch,)
+            tmp = -torch.log(softmax(ht.t().matmul(self.wei_WP))[indexes].squeeze())   # TODO(check) 所有都是加起来吗? , tmp.shape = (n_batch,)
             loss += tmp.sum()
-<<<<<<< HEAD
-        return loss
-=======
-
-        # calcul the predict loss
-        tags_pred = self.model_predictor(high_img_feat)
-        tags_gt   = ~(input_batch.tags_gt.type(np.bool)).type(np.int64)
-        loss_pred = -torch.log(torch.abs((tags_gt - tags_pred))).sum()
-
-        return loss + self.hyper_alpha * loss2
->>>>>>> 69e9bf457249c1babef29f606435a6b17ba8df64
+        #if loss.detach().item() == np.nan:
+        import pdb
+        pdb.set_trace()
+        return loss * 1.0 / n_batch
 
     def eval_test(self, test_dataset): #TODO
         """
@@ -184,7 +183,6 @@ class User_Caption(nn.Module):
             type(test_datset) = list
             test_dataset = [item0=[
                                     userid=int, 
-                                    imageid=int,
                                     imagefeat=np.array(),
                                     cap_seq=np.array()
                                   ]
@@ -199,35 +197,35 @@ class User_Caption(nn.Module):
         num_files = 0.
         with torch.no_grad() : 
             for item in test_dataset:
-                output = [1] # store the predicted seq_cap, start with <SOS>
-                userid, imageid, imagefeat, caq_seq = item
+                output = [self.n_voc_size-2] # store the predicted seq_cap, start with <SOS>
+                userid, imagefeat, cap_seq = item
                 assert (type(userid) == int)
-                assert (type(imageid) == int)
-                assert (type(imagefeat) == np.array and imagefeat.shape == (self.n_img_dim) )
-                assert (type(caq_seq) == np.array)
+                assert (type(imagefeat) == np.ndarray and imagefeat.shape == (self.n_img_dim,) )
+                assert (type(cap_seq) == np.ndarray)
                 
-                max_cap_len = len(caq_seq)
+                max_cap_len = len(cap_seq)
                 n_batch = 1
-                raw_img_feat = torch.from_numpy(input_batch.img_feat)
-                high_img_feat = self.model_feature_embed(raw_img_feat)
-                img_feat      = torch.concat([raw_img_feat, high_img_feat], axis=1)
-                user_embedding = self.wei_user[userid] # (n_cond_dim)
-                input_wid = 1               # 1 <SOS> 0 <EOS>
-
-                c0 = torch.randn(self.n_hidden)       # TODO (???变为Parameter吗需要?)
-                h0 = img_feat.unsqueeze(0).matmul(self.wei_WI).squeeze()
+                raw_img_feat = torch.from_numpy(imagefeat)
+                user_embedding = self.wei_user[userid]    # (n_cond_dim)
+                input_wid =  self.n_voc_size-2              # size-2 <SOS> size-1 <EOS>
+                c0 = self.wei_c0.repeat(n_batch,1).t()  # TODO (???变为Parameter吗需要?)
+                h0 = raw_img_feat.unsqueeze(0).matmul(self.wei_WI).squeeze()
 
                 self.cond_lstm.eval_start((h0, c0), user_embedding)
-                while input_wid != 0 :
-                    lstm_input = self.word_emb(input_wid) # FIXME (int or numpy, need experiment) shape = (dim,)
+                while input_wid != self.n_voc_size-1 and len(output) < 52:
+                    lstm_input = self.word_emb(torch.tensor(input_wid)) # FIXME (int or numpy, need experiment) shape = (dim,)
                     h, c = self.cond_lstm.eval_step(lstm_input) 
                     input_wid = h.unsqueeze(0).matmul(self.wei_WP).numpy().argmax()
                     output.append(input_wid)
 
                 # TODO (make use of output and gt and calculate the score)
+                output_str = " ".join([ self.dictionary[i] for i in output if i < len(self.dictionary.token2id)])
+                gt_str = " ".join([ self.dictionary[i] for i in cap_seq.tolist() if i < len(self.dictionary.token2id)])
+                print ('pred:', output_str)
+                print ('gt  :', gt_str)
                 from nlp_score import score
-                ref = {1: " ".join(map(str, cap_seq.to_list()))}
-                hypo = {1: " ".join(map(str, output_seq))}
+                ref = {1: [gt_str]}
+                hypo = {1: [output_str]}
                 score_map = score(ref, hypo)
                 BLEU_1 += score_map['Bleu_1']
                 BLEU_2 += score_map['Bleu_2']
@@ -238,17 +236,14 @@ class User_Caption(nn.Module):
 
         self._best = 'not record' #TODO add it 
 
-        return (None , ('Bleu - 1gram:' + str(BLEU_1/len(test_dataset)) + # TODO add the result to this function
-                'Bleu - 2gram:' + str(BLEU_2/len(test_dataset)) + 
-                'Bleu - 3gram:'+ str(BLEU_3/len(test_dataset)) + 
-                'Bleu - 4gram:'+ str(BLEU_4/len(test_dataset)) +
-                'Rouge:'+ str(ROUGE_L/len(test_dataset))
+        return (None , ('\nBleu1:' + str(BLEU_1/len(test_dataset)) + # TODO add the result to this function
+                '\nBleu2:' + str(BLEU_2/len(test_dataset)) + 
+                '\nBleu3:'+ str(BLEU_3/len(test_dataset)) + 
+                '\nBleu4:'+ str(BLEU_4/len(test_dataset)) +
+                '\nRouge:'+ str(ROUGE_L/len(test_dataset))
                ))
                 
     def best_result(self): 
         # return the best eval value to the caller
         return self._best
 
-
-
-class 
