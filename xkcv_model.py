@@ -8,7 +8,7 @@ from torch import *
 import torch.nn.init as init
 from model import *
 from nlp_score import score # 评分函数
-from xklib import space
+from xklib import *
 
 ####################################
 # 
@@ -46,13 +46,14 @@ def get_instance(name, args, path=None):
     model = eval(name)(args)
     if (path != None):
         path = dict_path + path
-        model.load_state_dict(torch.load(path))
+        if os.path.exists(path) :
+            model._load_model(path)
     return model
 
 def save_xkmodel(model, path):
     if not os.path.exists(dict_path) : 
         os.mkdir(dict_path)
-    torch.save(model.state_dict(), dict_path+path)
+    model._save_model(dict_path+path)
 
 # XXX (Driver Module, contains a lot nn.module and this is a driven model)
 #     1. handle loss and train 
@@ -67,7 +68,7 @@ class xkcv_model(torch.nn.Module) :
         raise NotImplementedError()
         pass
 
-    def train_step(self, input_batch):
+    def train_step(self, input_batch, batch=None, bid=None):
         """
             train_step，see it in [](https://pytorch-cn.readthedocs.io/zh/latest/package_references/torch-optim/)
         """
@@ -75,10 +76,10 @@ class xkcv_model(torch.nn.Module) :
         self.train()
 
         self.optimizer.zero_grad()
-        loss = self._step_loss(input_batch)
+        loss = self._step_loss(input_batch, batch, bid)
         loss.backward()
         self.optimizer.step()
-        
+
         return loss.item()
 
     def eval_test(self, test_dataset): 
@@ -93,6 +94,11 @@ class xkcv_model(torch.nn.Module) :
     def best_result(self):  
         raise NotImplementedError()
 
+    def _save_model(self, path):
+        torch.save(self.state_dict(), path)
+    
+    def _load_model(self, path):
+        self.load_state_dict(torch.load(path))
 
 # XXX (需要注意，句子要加入 <SOS> 和 <EOS> 在句首和句尾
 class User_Caption(xkcv_model):
@@ -111,24 +117,31 @@ class User_Caption(xkcv_model):
         self.n_hidden = args.n_hidden
         self.wei_user = torch.nn.Parameter(Tensor(self.n_user, self.n_user_dim))
         # construct the link to the lstm
-        self.wei_WI = torch.nn.Parameter(Tensor(self.n_img_dim+self.n_high_dim, self.n_hidden))   # self.wei_WI 见图, image_feat transform matrix
+        self.wei_WI = torch.nn.Parameter(Tensor(self.n_img_dim+self.n_user_dim, self.n_hidden))   # self.wei_WI 见图, image_feat transform matrix
+        self.wei_WC = torch.nn.Parameter(Tensor(self.n_img_dim+self.n_user_dim, self.n_hidden))   # self.wei_WI 见图, image_feat transform matrix
         self.wei_WP = torch.nn.Parameter(Tensor(self.n_hidden, self.n_voc_size))  # self.wei_WP 预测softmax的地方，
-        self.wei_c0 = torch.nn.Parameter(torch.randn(self.n_hidden))
         # === submodule ===
-        self.cond_lstm = Cond_LSTM(self.n_word_dim, args.n_hidden, args.n_F, self.n_user_dim)
+        self.cond_lstm = torch.nn.LSTM(self.n_word_dim, self.n_hidden, 1, True, False) # dropout 必须多层LSTM
         self.word_emb = torch.nn.Embedding(self.n_voc_size, self.n_word_dim)
         
         # XXX 初始化变量要reset_parameter中添加
         self.reset_parameter()
         self.optimizer = xkcv_optimizer.get_instance(self, args) # XXX 一定要在 所有parameter之后
-        import pdb
-        pdb.set_trace()
+
+        def compare_cos(v_a, v_b):
+            import pdb
+            pdb.set_trace()
+            assert (isinstance(v_a, torch.Tensor))
+            assert (isinstance(v_b, torch.Tensor))
+            print  ('similarity is : ', torch.nn.CosineSimilarity(2)(v_a, v_b))
+
+        self.compare = DelayArgProcessor(2, compare_cos)
 
     def reset_parameter(self):
         self.wei_user = init.normal_(self.wei_user, mean=0.0, std=1.0)
-        self.wei_WI   = init.normal_(self.wei_WI, mean=0.0, std=1.0)
+        self.wei_WI   = init.normal_(self.wei_WI, mean=0.0, std=10.0)
+        #self.wei_WC   = init.normal_(self.wei_WI, mean=0.0, std=1.0)
         self.wei_WP   = init.normal_(self.wei_WP, mean=0.0, std=1.0)
-        self.wei_c0 = init.normal_(self.wei_c0, mean=0.0, std=1.0)
 
     def loss_function (self, raw_feature, high_feature):
         """ @ mutable
@@ -142,7 +155,7 @@ class User_Caption(xkcv_model):
         # TODO (try different loss function, the basic is to use tag-predict crossentropy like loss)
 
 
-    def _step_loss(self, input_batch): # TODO 将这个拆分为 forward 和 loss_fn 两个
+    def _step_loss(self, input_batch, epochid, batchid): # TODO 将这个拆分为 forward 和 loss_fn 两个
         """
         输入格式: 
         @ input_batch : 
@@ -150,32 +163,49 @@ class User_Caption(xkcv_model):
             @ key [int]   uid      : 0-base
             @ key [numpy] img_feat : .shape = (n_batch, n_img_dim)
             @ key [numpy] cap_seq  : .shape = (n_batch, n_cap_len)
+            ------------------------------------------------------
+            <SOS>  voc_size
+            <SOE>  voc_size+1
         """
+        n_batch = input_batch.img_feat.shape[0]
         user_embedding = self.wei_user[input_batch.uid] # (n_user_dim,)
         raw_img_feat = torch.from_numpy(input_batch.img_feat)
-        #high_img_feat = self.model_feature_embed(raw_img_feat)
-        #img_feat      = torch.concat([raw_img_feat, high_img_feat], axis=1)
-        img_feat = raw_img_feat
-        n_batch = img_feat.shape[0]
-        #import pdb
-        #pdb.set_trace()
+        img_feat = torch.cat([raw_img_feat, user_embedding.repeat(n_batch, 1)], 1)
         lstm_input = torch.transpose(self.word_emb(torch.from_numpy(input_batch.cap_seq)), 0, 1) # n_step, n_batch, dim
-        #c0 = self.wei_c0.repeat(n_batch,1).t()  # TODO (???变为Parameter吗需要?)
-        h0 = img_feat.matmul(self.wei_WI).t() # FIXME 梯度爆炸了
-        c0 = h0
-        h, c = self.cond_lstm(lstm_input, (h0,c0), user_embedding) 
+        """
+            h0.shape = [1, n_batch, n_img_final_dim]
+        """
+        h0 = img_feat.matmul(self.wei_WI).unsqueeze(0) # FIXME 梯度爆炸了  #shapoe
+        # c0 = img_feat.matmul(self.wei_WC).unsqueeze(0) # FIXME 梯度爆炸了
+        c0 = torch.full_like(h0, 0)
+        output, (h, c) = self.cond_lstm(lstm_input, (h0,c0)) 
         softmax = torch.nn.Softmax(dim=-1)
         loss = torch.tensor(0, dtype=torch.float32) # 初始化为0, 否则
-        for i, ht in enumerate(h[1:]): # TODO(check) <EOS>怎么考虑,然后Loss计算要考虑后面的吗。
-            indexes = (range(n_batch), input_batch.cap_seq[:,i])  # 同一个step中，所有的batch的gt对应的prob选取出来。
-            tmp = -torch.log(softmax(ht.t().matmul(self.wei_WP))[indexes].squeeze())   # TODO(check) 所有都是加起来吗? , tmp.shape = (n_batch,)
-            loss += tmp.sum()
-        #if loss.detach().item() == np.nan:
-        import pdb
-        pdb.set_trace()
-        return loss * 1.0 / n_batch
+        h = output
 
-    def eval_test(self, test_dataset): #TODO
+        """ {DEBUG} """
+        #import pdb
+        #pdb.set_trace()
+        """
+            NOTE:(DEBUG/FIXED)
+                这里h[i]是第i个输入得到的结果。所以h[i]应该和cap_seq[i+1]比较结果
+        """
+
+        for i, ht in enumerate(h[:-1]): # TODO(check) <EOS>怎么考虑,然后Loss计算要考虑后面的吗。
+            indexes = (range(n_batch), input_batch.cap_seq[:,i+1])  # 同一个step中，所有的batch的gt对应的prob选取出来。
+            tmp = -torch.log(softmax(ht.matmul(self.wei_WP))[indexes].squeeze())   # TODO(check) 所有都是加起来吗? , tmp.shape = (n_batch,)
+            loss += tmp.mean()
+
+        print(h0.shape)
+        loss /= len(h[:-1])
+        if batchid == 0:
+            self.compare.process(h0)
+            pass
+
+        return loss * 1.0
+#TODO (将id->seq变成一个函数)
+
+    def eval_test(self, test_dataset): 
         """
             output the eval information and store it at best result
 
@@ -195,6 +225,9 @@ class User_Caption(xkcv_model):
         BLEU_4 = 0.
         ROUGE_L = 0.
         num_files = 0.
+        once = Once(print)
+        #import pdb
+        #pdb.set_trace()
         with torch.no_grad() : 
             for item in test_dataset:
                 output = [self.n_voc_size-2] # store the predicted seq_cap, start with <SOS>
@@ -202,20 +235,23 @@ class User_Caption(xkcv_model):
                 assert (type(userid) == int)
                 assert (type(imagefeat) == np.ndarray and imagefeat.shape == (self.n_img_dim,) )
                 assert (type(cap_seq) == np.ndarray)
-                
+
                 max_cap_len = len(cap_seq)
                 n_batch = 1
-                raw_img_feat = torch.from_numpy(imagefeat)
-                user_embedding = self.wei_user[userid]    # (n_cond_dim)
+                raw_img_feat = torch.unsqueeze(torch.from_numpy(imagefeat), 0)
+                user_embedding = torch.unsqueeze(self.wei_user[userid], 0)   # (n_cond_dim, )
+                imgfeat = torch.cat([raw_img_feat, user_embedding], dim=1)
                 input_wid =  self.n_voc_size-2              # size-2 <SOS> size-1 <EOS>
-                c0 = self.wei_c0.repeat(n_batch,1).t()  # TODO (???变为Parameter吗需要?)
-                h0 = raw_img_feat.unsqueeze(0).matmul(self.wei_WI).squeeze()
-
-                self.cond_lstm.eval_start((h0, c0), user_embedding)
+                h0 = imgfeat.matmul(self.wei_WI).unsqueeze(0)
+                #c0 = imgfeat.matmul(self.wei_WC).unsqueeze(0)
+                c0 = torch.full_like(h0, 0)
                 while input_wid != self.n_voc_size-1 and len(output) < 52:
-                    lstm_input = self.word_emb(torch.tensor(input_wid)) # FIXME (int or numpy, need experiment) shape = (dim,)
-                    h, c = self.cond_lstm.eval_step(lstm_input) 
-                    input_wid = h.unsqueeze(0).matmul(self.wei_WP).numpy().argmax()
+                    lstm_input = self.word_emb(torch.tensor(input_wid)).repeat(1,1,1) # shape = (1,1,dim)
+                    _, (h0, c0) = self.cond_lstm(lstm_input, (h0,c0)) 
+                    input_wid = h0[0].matmul(self.wei_WP).numpy().argmax()
+                    idx = (h0[0].matmul(self.wei_WP).numpy()).squeeze().argsort()
+                    ttt = h0[0].matmul(self.wei_WP).numpy().squeeze()[idx]
+                    once.process(ttt, idx)
                     output.append(input_wid)
 
                 # TODO (make use of output and gt and calculate the score)

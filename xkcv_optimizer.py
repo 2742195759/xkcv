@@ -11,4 +11,4 @@ def get_instance(model, args) : # Get the optimizer for the
         return torch.optim.SGD(model.parameters(), lr=args.optimizer_lr, momentum=args.optimizer_momentum, weight_decay=args.optimizer_weightdecay)
     else :
         args.optimizer_name == 'adam'
-        return torch.optim.Adam(model.parameters(), lr=args.optimizer_lr, momentum=args.optimizer_momentum, weight_decay=args.optimizer_weightdecay)
+        return torch.optim.Adam(model.parameters(), lr=args.optimizer_lr,  weight_decay=args.optimizer_weightdecay)

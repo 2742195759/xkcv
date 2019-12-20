@@ -80,11 +80,11 @@ def normal_train(model_name, args, save=None, load=None):
         for bid in range(steps):
             batch = dataset.get_batch(bid)        # XXX dataset.get_batch()  应该返回一个 dict{str: numpy} , 列为对应的名词
             if not batch : continue
-            loss  = model.train_step(batch)       # XXX type is float
+            loss  = model.train_step(batch, epoch, bid)       # XXX type is float
             if ((bid+1) % args.eval_interval == 0): 
-                print ('[epoch:{epoch}, step:{bid}] eval = {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.eval_test(dataset.get_testset())))
+                print ('[epoch:{epoch}, step:{bid} / totstep:{tot}] eval = {eval_str}'.format(epoch=epoch, bid=bid, tot=steps, eval_str=model.eval_test(dataset.get_testset())))
             if ((bid+1) % args.loss_interval == 0): 
-                print ('[epoch:{epoch}, step:{bid}] loss = {loss_str}'.format(epoch=epoch, bid=bid, loss_str=str(loss)))
+                print ('[epoch:{epoch}, step:{bid} / totstep:{tot}] loss = {loss_str}'.format(epoch=epoch, bid=bid, tot=steps ,loss_str=str(loss)))
 
         print ('[epoch:{epoch}, step:{bid}] {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.eval_test(dataset.get_testset())))
         print ('[BEST epoch:{epoch}] {eval_str}'.format(epoch=epoch, bid=bid, eval_str=model.best_result()))
